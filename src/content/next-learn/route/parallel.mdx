@@ -1,0 +1,201 @@
+# Parallel routes 并行路由
+Next.js 的 **Parallel Routes（并行路由）** 是一种高级路由模式，允许在同一个布局（Layout）中同时渲染多个独立的路由片段（页面或组件），每个片段可以有自己的加载状态、错误处理和动态内容。它特别适合需要**复杂布局**或**多区域独立更新**的场景。
+
+---
+
+### **核心概念**
+
+Parallel Routes 的核心是使用**命名插槽（Named Slots）**，通过约定目录名（如 `@analytics`）定义插槽，并在布局中动态组合这些插槽。每个插槽对应一个独立的路由分支，可以独立加载、更新或处理错误。
+
+#### **目录结构示例**
+
+```bash
+app/
+  layout.tsx          # 主布局
+  @analytics/         # 插槽：分析面板
+    page.tsx
+  @notifications/     # 插槽：通知面板
+    page.tsx
+  page.tsx            # 主页面
+```
+
+---
+
+### **核心作用**
+
+1. **独立加载与更新**  
+   每个插槽的路由片段可以独立加载数据或更新，互不阻塞。
+
+   - 例如：主内容加载时，侧边栏可以独立显示加载状态。
+
+2. **复杂布局组合**  
+   将页面拆分为多个逻辑区域（如仪表盘、侧边栏、模态框），每个区域对应一个插槽。
+
+3. **条件性渲染**  
+   根据某些条件（如用户权限）动态决定是否渲染某个插槽。
+
+4. **错误隔离**  
+   单个插槽的错误不会影响其他区域，可单独处理错误状态。
+
+---
+
+### **实现方式**
+
+#### 1. **定义插槽目录**
+
+使用 `@` 前缀定义插槽目录（如 `@analytics`），每个插槽目录下必须有 `page.tsx`：
+
+```bash
+app/
+  layout.tsx
+  @analytics/
+    page.tsx       # 对应插槽内容
+  @notifications/
+    page.tsx
+```
+
+#### 2. **在布局中渲染插槽**
+
+在父布局（`layout.tsx`）中通过 `props` 接收插槽内容，并手动组合：
+
+```tsx
+// app/layout.tsx
+export default function Layout({
+  children,
+  analytics,
+  notifications,
+}: {
+  children: React.ReactNode
+  analytics: React.ReactNode // 对应 @analytics/page.tsx
+  notifications: React.ReactNode // 对应 @notifications/page.tsx
+}) {
+  return (
+    <div>
+      {/* 主内容 */}
+      <main>{children}</main>
+
+      {/* 并行插槽 */}
+      <aside>{analytics}</aside>
+      <section>{notifications}</section>
+    </div>
+  )
+}
+```
+
+#### 3. **独立加载与错误处理**
+
+每个插槽可以有自己的 `loading.tsx` 和 `error.tsx`：
+
+```bash
+app/
+  @analytics/
+    loading.tsx    # 插槽专属加载状态
+    error.tsx       # 插槽专属错误页面
+    page.tsx
+```
+
+---
+
+### **典型使用场景**
+
+#### 1. **仪表盘（Dashboard）**
+
+- 将仪表盘拆分为多个独立区域（数据图表、通知、用户列表），每个区域对应一个插槽。
+- 独立加载数据，避免相互阻塞。
+
+#### 2. **带模态框的页面**
+
+- 使用插槽渲染模态框（Modal），避免 URL 与页面状态同步问题。
+- 示例：
+  ```tsx
+  // app/layout.tsx
+  function Layout({ modal, children }) {
+    return (
+      <>
+        {children}
+        {modal} // 通过路由控制是否渲染模态框
+      </>
+    )
+  }
+  ```
+  访问 `/page` 显示主内容，访问 `/page?showModal=true` 同时显示主内容和模态框。
+
+#### 3. **条件性内容**
+
+- 根据用户角色动态渲染插槽：
+  ```tsx
+  function Layout({ adminPanel, userPanel }) {
+    const role = useUserRole()
+    return <div>{role === 'admin' ? adminPanel : userPanel}</div>
+  }
+  ```
+
+#### 4. **A/B 测试**
+
+- 通过不同插槽渲染不同版本的 UI，根据实验条件动态选择。
+
+---
+
+### **高级用法**
+
+#### 1. **动态插槽**
+
+使用 `[...]` 语法定义动态插槽名称：
+
+```bash
+app/
+  @[slot]/
+    page.tsx
+```
+
+在布局中通过 `params.slot` 获取动态插槽名。
+
+#### 2. **路由组（Route Groups）结合**
+
+将 Parallel Routes 与路由组 `(group)` 结合，实现更复杂的路由逻辑：
+
+```bash
+app/
+  (auth)/
+    layout.tsx
+    @sidebar/
+      page.tsx
+    page.tsx
+```
+
+#### 3. **TypeScript 支持**
+
+通过泛型定义插槽的 Props 类型：
+
+```tsx
+type LayoutProps = {
+  children: React.ReactNode
+  analytics: React.ReactNode
+  notifications: React.ReactNode
+}
+```
+
+---
+
+### **注意事项**
+
+1. **插槽目录必须包含 `page.tsx`**  
+   否则 Next.js 会忽略该插槽。
+
+2. **避免插槽命名冲突**  
+   插槽名称（如 `@analytics`）需要唯一。
+
+3. **默认路由匹配规则**  
+   访问 `/` 时，所有插槽会渲染其默认 `page.tsx`。可通过 `default.tsx` 设置备选内容。
+
+---
+
+### **总结**
+
+Parallel Routes 是 Next.js 中解决复杂布局和独立路由片段的终极方案，适用于：
+
+- 需要同时渲染多个独立区域的页面。
+- 实现条件性内容或动态 UI 组合。
+- 隔离错误和加载状态。
+
+熟练掌握这一特性，可以显著提升复杂应用的代码组织和用户体验！
