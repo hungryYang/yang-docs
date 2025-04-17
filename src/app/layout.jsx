@@ -17,6 +17,8 @@ export const metadata = {
   },
 }
 
+function f () { return <div> </div>}
+
 export default async function RootLayout({ children }) {
   const navbar = (
     <Navbar
@@ -39,10 +41,13 @@ export default async function RootLayout({ children }) {
           banner={<Banner storageKey="yang docs">yang docs</Banner>}
           navbar={navbar}
           footer={<Footer>MIT {new Date().getFullYear()} © yang docs.</Footer>}
-          editLink="Edit this page on GitHub"
-          docsRepositoryBase="https://github.com/shuding/nextra/blob/main/examples/docs"
+          editLink=""
+          docsRepositoryBase="https://github.com/hungryyangc/yang-docs"
           sidebar={{ defaultMenuCollapseLevel: 1 }}
           pageMap={pageMap}
+          feedback={{
+            content: null
+          }}
         >
           {children}
         </Layout>
