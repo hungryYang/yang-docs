@@ -20,6 +20,7 @@ export default function IndexPage() {
           旨在记录乱七八糟的学习内容
         </p>
 
+
         <div className="button-group">
           <Link href="/docs" className="button button-primary">
             浏览文档
@@ -28,7 +29,7 @@ export default function IndexPage() {
 
         <div className="command-line">
           <span className="arrow">▲</span>
-          <span className="command">npx create-next-app@latest</span>
+          <span className="command">大点干早点散</span>
         </div>
       </div>
     </div>
