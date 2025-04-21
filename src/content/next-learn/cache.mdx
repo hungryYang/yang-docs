@@ -1,0 +1,151 @@
+## Next.js 缓存机制概述
+
+Next.js 在构建高性能 Web 应用时，通过多层次缓存策略来提升渲染效率和响应速度。主要涉及以下几个层面：
+
+1. **静态生成缓存 (SSG)**：在构建时生成 HTML，并缓存到文件系统或 CDN；
+2. **增量静态再生成 (ISR)**：允许静态页面在运行时根据 `revalidate` 参数按需重新生成；
+3. **服务器端渲染 (SSR)**：默认无缓存，但可手动设置 `Cache-Control`；
+4. **App Router 数据缓存**：在 `app/` 目录下，对 `fetch` 请求和 React Server Component (RSC) 进行自动或自定义缓存；
+5. **运行时与边缘缓存**：通过响应头和边缘网络 (CDN) 缓存 API 路由或中间件输出。
+
+---
+
+## 1. 静态生成 (SSG) 与 ISR
+
+### 1.1 `getStaticProps`
+
+- **用途**：在构建时运行，生成 HTML 与 JSON 数据缓存于服务器文件系统。
+- **API**：
+  ```js
+  export async function getStaticProps() {
+    const data = await fetchData();
+    return {
+      props: { data },
+      revalidate: 60, // 每隔 60 秒重新生成
+    };
+  }
+  ```
+- **机制**：首次构建时统一生成，之后访问命中缓存；当距离上次生成超过 `revalidate` 秒数，访问会触发后台再生，更新缓存。
+
+### 1.2 按需触发缓存更新 (On-demand ISR)
+
+- **API**：在 API Route 或者服务器环境中调用 `res.revalidate(path)` 或 `res.revalidateTag(tag)`：
+  ```js
+  // pages/api/revalidate.js
+  export default async function handler(req, res) {
+    await res.revalidate('/blog/[slug]');
+    return res.json({ revalidated: true });
+  }
+  ```
+- **说明**：可灵活触发指定路径或标签页面的再生成，无需等到 `revalidate` 定时。
+
+---
+
+## 2. 服务器端渲染 (SSR)
+
+- **`getServerSideProps`**：每次请求都在服务器执行，无持久缓存。
+- **手动缓存**：可以在响应头中设置 Cache-Control：
+  ```js
+  export async function getServerSideProps({ res }) {
+    res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=30');
+    const data = await fetchData();
+    return { props: { data } };
+  }
+  ```
+- **参数含义**：
+  - `s-maxage`：Vercel Edge 或 CDN 缓存有效期；
+  - `stale-while-revalidate`：缓存过期后可继续提供旧内容，同时异步更新。
+
+---
+
+## 3. App Router 数据缓存
+
+在 `app/` 目录中，Next.js 提供更细粒度的缓存控制：
+
+### 3.1 内置 `fetch` 缓存
+
+- 默认行为：同一路径的 `fetch` 请求在一次 RSC 渲染中只会发起一次网络请求。
+- **自定义缓存**：
+  ```js
+  const res = await fetch('https://api.example.com/data', {
+    next: { revalidate: 120 } // ISR：120 秒后过期
+  });
+  ```
+- **`next` 参数**：
+  - `revalidate: number`：自动 ISR；
+  - `cache: 'force-cache' | 'no-cache'`：强制缓存或不使用缓存;
+  - `tags: string[]`：与 RSC 相关的标签，用于 `revalidateTag`。
+
+### 3.2 React `cache` 函数
+
+- **API**：
+  ```js
+  import { cache } from 'react';
+
+  const getData = cache(async (id) => {
+    const res = await fetch(`/api/data/${id}`);
+    return res.json();
+  });
+  ```
+- **作用**：对纯函数级别的异步操作进行内存缓存，避免重复执行。
+
+### 3.3 路径与标签再验证
+
+- **`revalidatePath(path)`**：无痕在运行时触发指定 App 路径页面的再渲染。
+- **`revalidateTag(tag)`**：根据标签触发关联组件或页面的缓存失效和再生成。
+
+示例：
+```js
+'use server';
+import { revalidatePath, revalidateTag } from 'next/cache';
+
+export async function action() {
+  // 数据更新后，触发页面/组件刷新
+  revalidatePath('/dashboard');
+  revalidateTag('user-data');
+}
+```
+
+---
+
+## 4. 中间件与边缘缓存
+
+### 4.1 Middleware Cache Control
+
+- 在 `middleware.js` 中，通过 `NextResponse` 设置缓存头：
+  ```js
+  import { NextResponse } from 'next/server';
+
+  export function middleware(req) {
+    const res = NextResponse.next();
+    res.headers.set('Cache-Control', 'public, max-age=0, s-maxage=300');
+    return res;
+  }
+  ```
+
+### 4.2 Edge API Routes
+
+- 支持边缘运行，通过响应头同样控制缓存：
+  ```js
+  export const config = { runtime: 'edge' };
+
+  export default async function handler(req) {
+    return new Response(JSON.stringify({ time: Date.now() }), {
+      headers: { 'Cache-Control': 'public, max-age=60' }
+    });
+  }
+  ```
+
+---
+
+## 5. 静态资源与 CDN
+
+- Next.js 内置的 `/_next/static` 路径下的 JS、CSS、图片等资源，会自动设置长期缓存和指纹 (hash)，并通过 CDN 分发。
+- **缓存失效**：依赖于资源文件名中的内容哈希，当内容变化时 URL 变化，自动更新。
+
+---
+
+## 总结
+
+Next.js 通过多种缓存策略（SSG/ISR、SSR 手动缓存、App Router 数据缓存、中间件与边缘缓存、静态资源 CDN 缓存）协同工作，开发者可以根据需求灵活选择和配置。常用 API 包括 `getStaticProps` 的 `revalidate`、`res.revalidate()`、`fetch(..., { next: { revalidate } })`、`cache()`、`revalidatePath()`、`revalidateTag()` 以及通过响应头设置 `Cache-Control`。
+
