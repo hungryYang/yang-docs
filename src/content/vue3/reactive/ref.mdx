@@ -1,0 +1,180 @@
+`ref`相对于`reactive`实现更简单一些，主要是通过`RefImpl`类进行数据劫持，并且同样是通过`Dep`类进行数据收集。
+
+``` ts
+export function ref(value?: unknown) {
+  return createRef(value, false)
+}
+
+/**
+ * 创建ref对象的内部函数
+ * @param rawValue - 原始值
+ * @param shallow - 是否为浅层响应式
+ * @returns ref实现对象
+ */
+function createRef(rawValue: unknown, shallow: boolean) {
+  if (isRef(rawValue)) {
+    return rawValue
+  }
+  return new RefImpl(rawValue, shallow)
+}
+
+/**
+ * Ref的内部实现类
+ * 处理响应式数据的getter/setter逻辑
+ * @internal
+ */
+class RefImpl<T = any> {
+  _value: T
+  private _rawValue: T
+
+  dep: Dep = new Dep()
+
+  public readonly [ReactiveFlags.IS_REF] = true
+  public readonly [ReactiveFlags.IS_SHALLOW]: boolean = false
+
+  constructor(value: T, isShallow: boolean) {
+    this._rawValue = isShallow ? value : toRaw(value)
+    this._value = isShallow ? value : toReactive(value)
+    this[ReactiveFlags.IS_SHALLOW] = isShallow
+  }
+
+  get value() {
+    if (__DEV__) {
+      this.dep.track({
+        target: this,
+        type: TrackOpTypes.GET,
+        key: 'value',
+      })
+    } else {
+      this.dep.track()
+    }
+
+    return this._value
+  }
+
+  set value(newValue) {
+    const oldValue = this._rawValue
+    const useDirectValue =
+      this[ReactiveFlags.IS_SHALLOW] ||
+      isShallow(newValue) ||
+      isReadonly(newValue)
+    newValue = useDirectValue ? newValue : toRaw(newValue)
+    if (hasChanged(newValue, oldValue)) {
+      this._rawValue = newValue
+      this._value = useDirectValue ? newValue : toReactive(newValue)
+      if (__DEV__) {
+        this.dep.trigger({
+          target: this,
+          type: TriggerOpTypes.SET,
+          key: 'value',
+          newValue,
+          oldValue,
+        })
+      } else {
+        this.dep.trigger()
+      }
+    }
+  }
+}
+
+
+```
+
+### toRefs
+```ts
+/**
+ * 将响应式对象转换为普通对象
+ * 结果对象的每个属性都是指向原始对象对应属性的ref
+ * 每个单独的ref都是使用toRef创建的
+ *
+ * @param object - 要转换为ref对象的响应式对象
+ * @returns 转换后的ref对象
+ * @see {@link https://cn.vuejs.org/api/reactivity-utilities.html#torefs}
+ */
+export function toRefs<T extends object>(object: T): ToRefs<T> {
+  if (__DEV__ && !isProxy(object)) {
+    warn(`toRefs()期望一个响应式对象，但接收到了一个普通对象。`)
+  }
+  const ret: any = isArray(object) ? new Array(object.length) : {}
+  for (const key in object) {
+    ret[key] = propertyToRef(object, key)
+  }
+  return ret
+}
+```
+
+### toRef
+
+```ts
+export function toRef(
+  source: Record<string, any> | MaybeRef,
+  key?: string,
+  defaultValue?: unknown,
+): Ref {
+  if (isRef(source)) {
+    return source
+  } else if (isFunction(source)) {
+    return new GetterRefImpl(source) as any
+  } else if (isObject(source) && arguments.length > 1) {
+    return propertyToRef(source, key!, defaultValue)
+  } else {
+    return ref(source)
+  }
+}
+```
+
+`toRef`根据传入参数类型进行了判断处理，先看`object`类型的操作，是调用了一个`propertyToRef`方法。
+
+```ts
+/**
+ * 将对象属性转换为ref的内部函数
+ * @param source - 源对象
+ * @param key - 属性键
+ * @param defaultValue - 默认值
+ * @returns 属性ref对象
+ */
+function propertyToRef(
+  source: Record<string, any>,
+  key: string,
+  defaultValue?: unknown,
+) {
+  const val = source[key]
+  return isRef(val)
+    ? val
+    : (new ObjectRefImpl(source, key, defaultValue) as any)
+}
+```
+这个方法主要就是取`reactive`对象的值再次判断是否为`ref`类型，如果不是的话，则通过`ObjectRefImpl`类进行构造
+
+```ts
+/**
+ * 对象属性ref的内部实现类
+ * 用于创建指向响应式对象特定属性的ref
+ */
+class ObjectRefImpl<T extends object, K extends keyof T> {
+  public readonly [ReactiveFlags.IS_REF] = true
+  public _value: T[K] = undefined!
+
+  constructor(
+    private readonly _object: T,
+    private readonly _key: K,
+    private readonly _defaultValue?: T[K],
+  ) {}
+
+  get value() {
+    const val = this._object[this._key]
+    return (this._value = val === undefined ? this._defaultValue! : val)
+  }
+
+  set value(newVal) {
+    this._object[this._key] = newVal
+  }
+
+  // 调用 triggerRef(ref) 触发
+  get dep(): Dep | undefined {
+    return getDepFromReactive(toRaw(this._object), this._key)
+  }
+}
+```
+
+与`RefImpl`不同，`ObjectRefImpl`并没有自己的依赖追踪机制，这是因为访问`value`时，调用的是原有`reactive`的属性，会自动触发原对象getter的dep链。

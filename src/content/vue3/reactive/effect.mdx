@@ -61,7 +61,7 @@ class Dep {
 
     let link = this.activeLink
     if (link === undefined || link.sub !== activeSub) {
-      // 创建新的链接
+      // 将ReactiveEffect添加到Dep的activeLink中
       link = this.activeLink = new Link(activeSub, this)
 
       // 将链接添加到activeEffect的deps中（作为尾部）
@@ -368,3 +368,23 @@ export function endBatch(): void {
 
    - 数据变更时，trigger 通知相关 effect 执行
    - Effect 根据自身状态决定执行方式（立即执行或加入队列）
+
+
+
+![组件关系图](./png/effect-1.png)
+
+### 协作流程
+依赖收集阶段（读取数据时）：
+![依赖收集阶段（读取数据时）](./png/effect-2.png)
+依赖触发阶段（修改数据时）
+![依赖触发阶段（修改数据时）](./png/effect-3.png)
+
+### 数据结构
+Deps类和ReactiveEffect类都采用双向链表进行互相记录和依赖
+
+双向链表设计：
+
+- 每个 ReactiveEffect 维护自己的依赖链表（deps 和 depsTail）
+- 每个 Dep 也维护订阅者链表（subsHead 和 subs）
+
+![依赖结构](./png/effect-4.png)
