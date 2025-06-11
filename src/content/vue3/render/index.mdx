@@ -1,0 +1,531 @@
+Vue 3 中使用 Virtual DOM 构建视图树，每个组件或元素都会被抽象为一个 VNode。
+在 Vue 3 中，VNode 是一个标准化对象，核心函数是 createVNode，位于：
+`packages/runtime-core/src/vnode.ts`
+
+先看VNode的类型定义：
+```ts
+/**
+ * 虚拟节点接口定义
+ * 这是Vue虚拟DOM的核心数据结构，包含了渲染和更新所需的所有信息
+ */
+export interface VNode<
+  HostNode = RendererNode,
+  HostElement = RendererElement,
+  ExtraProps = { [key: string]: any },
+> {
+  /**
+   * @internal
+   * 标识这是一个虚拟节点
+   */
+  __v_isVNode: true
+
+  /**
+   * @internal
+   * 跳过响应式追踪标记
+   */
+  [ReactiveFlags.SKIP]: true
+
+  // 节点类型 HTML 标签、组件、文本等
+  type: VNodeTypes
+  // 节点属性或事件
+  props: (VNodeProps & ExtraProps) | null
+  // 节点键值，	diff 优化关键字段
+  key: PropertyKey | null
+  // 节点引用
+  ref: VNodeNormalizedRef | null
+  /**
+   * 单文件组件专用。在虚拟节点创建时使用当前的作用域ID进行赋值
+   * 该ID与当前渲染实例一起设置
+   */
+  scopeId: string | null
+  /**
+   * 单文件组件专用。分配给：
+   * - 带有:slotted SFC样式的插槽片段虚拟节点
+   * - 组件虚拟节点（在补丁/水合期间），以便其根节点可以继承组件的slotScopeIds
+   * @internal
+   */
+  slotScopeIds: string[] | null
+  // 子节点 （字符串、VNode 数组等）
+  children: VNodeNormalizedChildren
+  // 组件实例
+  component: ComponentInternalInstance | null
+  // 指令绑定数组
+  dirs: DirectiveBinding[] | null
+  // 过渡钩子
+  transition: TransitionHooks<HostElement> | null
+
+  // DOM相关属性
+  el: HostNode | null // 对应的真实 DOM 元素
+  anchor: HostNode | null // 片段锚点
+  target: HostElement | null // 传送门目标
+  targetStart: HostNode | null // 传送门目标起始锚点
+  targetAnchor: HostNode | null // 传送门目标锚点
+  /**
+   * 静态虚拟节点包含的元素数量
+   * @internal
+   */
+  staticCount: number
+
+  // 异步组件悬挂相关
+  suspense: SuspenseBoundary | null
+  /**
+   * @internal
+   * 服务端渲染内容
+   */
+  ssContent: VNode | null
+  /**
+   * @internal
+   * 服务端渲染后备内容
+   */
+  ssFallback: VNode | null
+
+  // 优化相关属性
+  shapeFlag: number // 形状标志，用于快速判断节点类型
+  patchFlag: number // 补丁标志，用于优化更新过程
+  /**
+   * @internal
+   * 动态属性列表
+   */
+  dynamicProps: string[] | null
+  /**
+   * @internal
+   * 动态子节点列表
+   */
+  dynamicChildren: (VNode[] & { hasOnce?: boolean }) | null
+
+  // 应用根节点专用
+  appContext: AppContext | null
+
+  /**
+   * @internal 词法作用域所有者实例
+   */
+  ctx: ComponentInternalInstance | null
+
+  /**
+   * @internal 由 v-memo 附加
+   */
+  memo?: any[]
+  /**
+   * @internal 用于清理 v-memo 缓存的索引
+   */
+  cacheIndex?: number
+  /**
+   * @internal __COMPAT__ 专用
+   */
+  isCompatRoot?: true
+  /**
+   * @internal 自定义元素拦截钩子
+   */
+  ce?: (instance: ComponentInternalInstance) => void
+}
+
+```
+
+### createVNode
+
+从一个列子切入虚拟节点的创建`const vnode = createVNode('div', { id: 'test' }, 'hello')`
+
+```ts
+/**
+ * 创建虚拟节点的内部实现
+ * 这是实际的创建逻辑，包含类型检查、属性处理和形状标志计算
+ * @param type 节点类型
+ * @param props 属性对象
+ * @param children 子节点
+ * @param patchFlag 补丁标志
+ * @param dynamicProps 动态属性数组
+ * @param isBlockNode 是否为块节点
+ * @returns 创建的虚拟节点
+ */
+function _createVNode(
+  type: VNodeTypes | ClassComponent | typeof NULL_DYNAMIC_COMPONENT,
+  props: (Data & VNodeProps) | null = null,
+  children: unknown = null,
+  patchFlag: number = 0,
+  dynamicProps: string[] | null = null,
+  isBlockNode = false,
+): VNode {
+  // 检查类型是否有效
+  if (!type || type === NULL_DYNAMIC_COMPONENT) {
+    if (__DEV__ && !type) {
+      warn(`Invalid vnode type when creating vnode: ${type}.`)
+    }
+    type = Comment
+  }
+
+  // 暂时忽略
+  if (isVNode(type)) {
+    // createVNode 接收现有的虚拟节点。这发生在以下情况：
+    // <component :is="vnode"/>
+    // #2078 确保在克隆过程中合并引用而不是覆盖它
+    const cloned = cloneVNode(type, props, true /* mergeRef: true */)
+    if (children) {
+      normalizeChildren(cloned, children)
+    }
+    if (isBlockTreeEnabled > 0 && !isBlockNode && currentBlock) {
+      if (cloned.shapeFlag & ShapeFlags.COMPONENT) {
+        currentBlock[currentBlock.indexOf(type)] = cloned
+      } else {
+        currentBlock.push(cloned)
+      }
+    }
+    cloned.patchFlag = PatchFlags.BAIL
+    return cloned
+  }
+
+  // 类组件标准化
+  if (isClassComponent(type)) {
+    type = type.__vccOpts
+  }
+
+  ...
+
+  // 类和样式标准化
+  if (props) {
+    // 对于响应式或代理对象，处理成普通对象
+    props = guardReactiveProps(props)!
+    let { class: klass, style } = props
+    if (klass && !isString(klass)) {
+      props.class = normalizeClass(klass)
+    }
+    if (isObject(style)) {
+      // 响应式状态对象需要被克隆，因为它们可能会被变异
+      if (isProxy(style) && !isArray(style)) {
+        style = extend({}, style)
+      }
+      props.style = normalizeStyle(style)
+    }
+  }
+
+  // 将虚拟节点类型信息编码为位图
+  const shapeFlag = isString(type)
+    ? ShapeFlags.ELEMENT
+    : __FEATURE_SUSPENSE__ && isSuspense(type)
+      ? ShapeFlags.SUSPENSE
+      : isTeleport(type)
+        ? ShapeFlags.TELEPORT
+        : isObject(type)
+          ? ShapeFlags.STATEFUL_COMPONENT
+          : isFunction(type)
+            ? ShapeFlags.FUNCTIONAL_COMPONENT
+            : 0
+
+  if (__DEV__ && shapeFlag & ShapeFlags.STATEFUL_COMPONENT && isProxy(type)) {
+    type = toRaw(type)
+    warn(
+      `Vue received a Component that was made a reactive object. This can ` +
+        `lead to unnecessary performance overhead and should be avoided by ` +
+        `marking the component with \`markRaw\` or using \`shallowRef\` ` +
+        `instead of \`ref\`.`,
+      `\nComponent that was made reactive: `,
+      type,
+    )
+  }
+
+  return createBaseVNode(
+    type,
+    props,
+    children,
+    patchFlag,
+    dynamicProps,
+    shapeFlag,
+    isBlockNode,
+    true,
+  )
+}
+```
+
+只看和例子相关的代码，忽略其他代码：
+ 1. 针对`props`进行了一个处理
+ ```ts
+   // 类和样式标准化
+  if (props) {
+    // 对于响应式或代理对象，处理成普通对象
+    props = guardReactiveProps(props)!
+
+    let { class: klass, style } = props
+    if (klass && !isString(klass)) {
+      // 对class属性进行拍平，传入的对象或数组会组装成class字符串
+      props.class = normalizeClass(klass)
+    }
+    if (isObject(style)) {
+      /**
+       * 特殊处理style对象
+       * 
+       * 输入 style 对象
+            ↓
+        style 是响应式代理？
+            ↓ 否
+        保持原样
+            ↓ 是
+        style 是数组？
+            ↓ 是
+        保持原样（数组有特殊处理）
+            ↓ 否
+        创建浅拷贝：extend({}, style)
+      */
+      if (isProxy(style) && !isArray(style)) {
+        style = extend({}, style)
+      }
+      // 对style对象进行拍平，传入的对象或数组会组装成style字符串
+      props.style = normalizeStyle(style)
+    }
+  }
+ ```
+ 2. 为当前节点计算标志
+ ```ts
+  // 将虚拟节点类型信息编码为位图
+  const shapeFlag = isString(type)
+    ? ShapeFlags.ELEMENT
+    : __FEATURE_SUSPENSE__ && isSuspense(type)
+      ? ShapeFlags.SUSPENSE
+      : isTeleport(type)
+        ? ShapeFlags.TELEPORT
+        : isObject(type)
+          ? ShapeFlags.STATEFUL_COMPONENT
+          : isFunction(type)
+            ? ShapeFlags.FUNCTIONAL_COMPONENT
+            : 0
+ ```
+ 这里采用了位运算，替代了传统的if else判断（比如`if (vnode.type === 'div' || vnode.type === 'span' || ...)`），
+
+ 3. 调用`createBaseVNode`创建虚拟节点
+
+### createBaseVNode
+
+```ts
+/**
+ * 创建基础虚拟节点
+ * 这是创建虚拟节点的核心函数，包含所有必要的初始化逻辑
+ * @param type 节点类型
+ * @param props 属性对象
+ * @param children 子节点
+ * @param patchFlag 补丁标志
+ * @param dynamicProps 动态属性数组
+ * @param shapeFlag 形状标志
+ * @param isBlockNode 是否为块节点
+ * @param needFullChildrenNormalization 是否需要完整的子节点标准化
+ * @returns 创建的虚拟节点
+ */
+function createBaseVNode(
+  type: VNodeTypes | ClassComponent | typeof NULL_DYNAMIC_COMPONENT,
+  props: (Data & VNodeProps) | null = null,
+  children: unknown = null,
+  patchFlag = 0,
+  dynamicProps: string[] | null = null,
+  shapeFlag: number = type === Fragment ? 0 : ShapeFlags.ELEMENT,
+  isBlockNode = false,
+  needFullChildrenNormalization = false,
+): VNode {
+  // 创建虚拟节点对象，包含所有必要的属性
+  const vnode = {
+    __v_isVNode: true,
+    __v_skip: true,
+    type,
+    props,
+    key: props && normalizeKey(props),
+    ref: props && normalizeRef(props),
+    scopeId: currentScopeId,
+    slotScopeIds: null,
+    children,
+    component: null,
+    suspense: null,
+    ssContent: null,
+    ssFallback: null,
+    dirs: null,
+    transition: null,
+    el: null,
+    anchor: null,
+    target: null,
+    targetStart: null,
+    targetAnchor: null,
+    staticCount: 0,
+    shapeFlag,
+    patchFlag,
+    dynamicProps,
+    dynamicChildren: null,
+    appContext: null,
+    ctx: currentRenderingInstance,
+  } as VNode
+
+  if (needFullChildrenNormalization) {
+    // 标准化子节点
+    normalizeChildren(vnode, children)
+    // 标准化悬挂组件子节点
+    if (__FEATURE_SUSPENSE__ && shapeFlag & ShapeFlags.SUSPENSE) {
+      ;(type as typeof SuspenseImpl).normalize(vnode)
+    }
+  } else if (children) {
+    // 编译后的元素虚拟节点 - 如果传递了子节点，只能是字符串或数组类型
+    vnode.shapeFlag |= isString(children)
+      ? ShapeFlags.TEXT_CHILDREN
+      : ShapeFlags.ARRAY_CHILDREN
+  }
+
+  // 验证键值
+  if (__DEV__ && vnode.key !== vnode.key) {
+    warn(`VNode created with invalid key (NaN). VNode type:`, vnode.type)
+  }
+
+  // 暂时忽略
+  // 为块树跟踪虚拟节点
+  if (
+    isBlockTreeEnabled > 0 &&
+    // 避免块节点跟踪自己
+    !isBlockNode &&
+    // 有当前父块
+    currentBlock &&
+    // 补丁标志的存在表示此节点在更新时需要补丁。
+    // 组件节点也应该总是被补丁，因为即使组件不需要更新，
+    // 它也需要将实例持久化到下一个虚拟节点，以便稍后可以正确卸载。
+    (vnode.patchFlag > 0 || shapeFlag & ShapeFlags.COMPONENT) &&
+    // EVENTS 标志仅用于水合，如果它是唯一的标志，
+    // 由于处理程序缓存，虚拟节点不应被视为动态的。
+    vnode.patchFlag !== PatchFlags.NEED_HYDRATION
+  ) {
+    currentBlock.push(vnode)
+  }
+
+  // 兼容处理vue2
+  if (__COMPAT__) {
+    // 转换兼容性 v-model 属性
+    convertLegacyVModelProps(vnode)
+    // 定义兼容性虚拟节点属性
+    defineLegacyVNodeProperties(vnode)
+  }
+
+  return vnode
+}
+```
+
+1. 调用`normalizeChildren`标准化子节点
+
+```ts
+/**
+ * 标准化子节点
+ * 将各种类型的子节点标准化为适当的形式，并更新虚拟节点的形状标志
+ * @param vnode 虚拟节点
+ * @param children 子节点
+ */
+export function normalizeChildren(vnode: VNode, children: unknown): void {
+  let type = 0
+  const { shapeFlag } = vnode
+  if (children == null) {
+    children = null
+  } else if (isArray(children)) {
+    type = ShapeFlags.ARRAY_CHILDREN
+  } else if (typeof children === 'object') {
+    if (shapeFlag & (ShapeFlags.ELEMENT | ShapeFlags.TELEPORT)) {
+      // 为普通元素和 Teleport 将插槽标准化为普通子节点
+      const slot = (children as any).default
+      if (slot) {
+        // _c 标记由 withCtx() 添加，表示这是编译后的插槽
+        slot._c && (slot._d = false)
+        normalizeChildren(vnode, slot())
+        slot._c && (slot._d = true)
+      }
+      return
+    } else {
+      type = ShapeFlags.SLOTS_CHILDREN
+      const slotFlag = (children as RawSlots)._
+      if (!slotFlag && !isInternalObject(children)) {
+        // 如果插槽没有标准化，附加上下文实例
+        // （编译/标准化的插槽已经有上下文）
+        ;(children as RawSlots)._ctx = currentRenderingInstance
+      } else if (slotFlag === SlotFlags.FORWARDED && currentRenderingInstance) {
+        // 子组件从父组件接收转发的插槽。
+        // 其插槽类型由其父组件的插槽类型决定。
+        if (
+          (currentRenderingInstance.slots as RawSlots)._ === SlotFlags.STABLE
+        ) {
+          ;(children as RawSlots)._ = SlotFlags.STABLE
+        } else {
+          ;(children as RawSlots)._ = SlotFlags.DYNAMIC
+          vnode.patchFlag |= PatchFlags.DYNAMIC_SLOTS
+        }
+      }
+    }
+  } else if (isFunction(children)) {
+    children = { default: children, _ctx: currentRenderingInstance }
+    type = ShapeFlags.SLOTS_CHILDREN
+  } else {
+    children = String(children)
+    // 强制 teleport 子节点为数组，以便可以移动
+    if (shapeFlag & ShapeFlags.TELEPORT) {
+      type = ShapeFlags.ARRAY_CHILDREN
+      children = [createTextVNode(children as string)]
+    } else {
+      type = ShapeFlags.TEXT_CHILDREN
+    }
+  }
+  vnode.children = children as 
+  // 使用位运算符 保留自身shapeFlag 并添加子元素的shapeFlag
+  vnode.shapeFlag |= type
+}
+```
+
+标准化组节点流程：
+```
+输入: children, vnode.shapeFlag
+
+    ↓
+
+children == null?
+
+    ↓ 是
+
+children = null, type = 0
+
+    ↓ 否
+
+isArray(children)?
+
+    ↓ 是
+
+type = ARRAY_CHILDREN
+
+    ↓ 否
+
+typeof children === 'object'?
+
+    ↓ 是
+
+shapeFlag & (ELEMENT | TELEPORT)?
+
+    ↓ 是                    ↓ 否
+
+展开插槽内容              type = SLOTS_CHILDREN
+
+递归处理                  处理插槽上下文和标志
+提前返回
+
+    ↓ 否
+
+isFunction(children)?
+
+    ↓ 是
+
+包装为插槽对象
+
+type = SLOTS_CHILDREN
+
+    ↓ 否
+
+children = String(children)
+
+shapeFlag & TELEPORT?
+
+    ↓ 是                    ↓ 否
+
+type = ARRAY_CHILDREN      type = TEXT_CHILDREN
+
+children = [TextVNode]     children = string
+
+    ↓
+
+vnode.children = children
+
+vnode.shapeFlag |= type
+```
+
+当前先忽略block动态更新内容部分。
